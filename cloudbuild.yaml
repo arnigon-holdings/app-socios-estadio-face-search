@@ -1,0 +1,38 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/face-search-service:$COMMIT_SHA'
+      - '.'
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/face-search-service:$COMMIT_SHA'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'face-search-service'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/face-search-service:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--set-env-vars=AWS_REGION=${_AWS_REGION}'
+      - '--set-env-vars=REKOGNITION_COLLECTION_ID=${_REKOGNITION_COLLECTION_ID}'
+      - '--set-env-vars=DATABASE_URL=${_DATABASE_URL}'
+      - '--set-env-vars=FACE_SEARCH_TOKEN=${_FACE_SEARCH_TOKEN}'
+
+substitutions:
+  _AWS_REGION: us-east-1
+  _REKOGNITION_COLLECTION_ID: socios_stadium_users
+  _DATABASE_URL: postgres://user:pass@/db?host=/cloudsql/instance
+  _FACE_SEARCH_TOKEN: change-me
+
+images:
+  - 'gcr.io/$PROJECT_ID/face-search-service:$COMMIT_SHA'
