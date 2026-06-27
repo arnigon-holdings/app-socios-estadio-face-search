@@ -25,14 +25,18 @@ steps:
       - '--port=8080'
       - '--set-env-vars=AWS_REGION=${_AWS_REGION}'
       - '--set-env-vars=REKOGNITION_COLLECTION_ID=${_REKOGNITION_COLLECTION_ID}'
-      - '--set-env-vars=DATABASE_URL=${_DATABASE_URL}'
-      - '--set-env-vars=FACE_SEARCH_TOKEN=${_FACE_SEARCH_TOKEN}'
+      # DATABASE_URL y FACE_SEARCH_TOKEN se montan desde Secret Manager (ver README.md).
+      # Para montarlos:
+      #   gcloud run services update face-search-service \
+      #     --update-secrets=DATABASE_URL=DATABASE_URL:latest,\
+      #                    FACE_SEARCH_TOKEN=FACE_SEARCH_TOKEN:latest
+      # Una vez montados, Cloud Run los expone como env vars al contenedor.
+      - '--set-secrets=DATABASE_URL=DATABASE_URL:latest'
+      - '--set-secrets=FACE_SEARCH_TOKEN=FACE_SEARCH_TOKEN:latest'
 
 substitutions:
   _AWS_REGION: us-east-1
   _REKOGNITION_COLLECTION_ID: socios_stadium_users
-  _DATABASE_URL: postgres://user:pass@/db?host=/cloudsql/instance
-  _FACE_SEARCH_TOKEN: change-me
 
 images:
   - 'gcr.io/$PROJECT_ID/face-search-service:$COMMIT_SHA'

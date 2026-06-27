@@ -6,6 +6,7 @@
 
 # Template is committed (no real values)
 !.env.example
+!.env.development
 
 # OS / editor / tooling
 .DS_Store

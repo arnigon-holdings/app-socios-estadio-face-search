@@ -93,17 +93,65 @@ Errores típicos (HTTP status + mensaje user-friendly):
 
 ## Env vars
 
-| Var | Requerida | Default | Descripción |
+Toda la configuración se carga desde variables de entorno. **No hay secretos hardcodeados en código** (los defaults en `internal/config/config.go` son solo valores de dev razonables).
+
+### Archivos de configuración
+
+| Archivo | Estado | Propósito |
+|---|---|---|
+| `face-search-service/.env.example` | tracked | Template con todas las variables documentadas |
+| `face-search-service/.env.development` | tracked (sin secretos) | Defaults de dev — funciona con `go run` o via `backend/docker-compose.yml` |
+| `face-search-service/.env` | gitignored | Override local |
+| `face-search-service/.env.production` | gitignored | Seteado por Secret Manager / Cloud Run en deploy |
+
+### Carga desde código
+
+`internal/config/config.go` carga cada var con `os.Getenv()` y default solo si está vacía. Ver el struct `Config` para el shape completo.
+
+### Tabla de variables
+
+| Var | Requerida | Default | Para qué sirve |
 |---|---|---|---|
-| `PORT` | no | `8080` | |
-| `DATABASE_URL` | sí | — | `postgres://...?sslmode=disable` |
-| `FACE_SEARCH_TOKEN` | sí | — | Bearer token compartido con admin |
-| `AWS_REGION` | sí | `us-east-1` | |
-| `AWS_ACCESS_KEY_ID` | sí (dev) | — | prod usa IAM role |
-| `AWS_SECRET_ACCESS_KEY` | sí (dev) | — | prod usa IAM role |
-| `AWS_S3_BUCKET_NAME` | no | `perfilamiento-faces` | Default |
-| `REKOGNITION_COLLECTION_ID` | no | `socios_stadium_users` | Default |
-| `CORS_ORIGINS` | sí | — | CSV. Sin esto = sin CORS = bloqueado por browser |
+| `PORT` | no | `8080` | Puerto HTTP del server. Render lo lee como `PORT` también. |
+| `DATABASE_URL` | **sí** | — | URL Postgres del backend Rails. Formato: `postgres://user:pass@host:port/db?sslmode=disable`. Sin esto el service crashea al boot. |
+| `FACE_SEARCH_TOKEN` | **sí** | — | Bearer token compartido con admin. Sin esto, todos los requests son 401. **PROD: rotar y montar desde Secret Manager**. |
+| `CORS_ORIGINS` | **sí** | — | CSV de origins permitidos. Sin esto = sin CORS headers = browser bloquea. Dev: `http://localhost:5174`. |
+| `AWS_REGION` | sí | `us-east-1` | Región AWS (Rekognition + S3). |
+| `AWS_ACCESS_KEY_ID` | solo dev | — | IAM user con permisos S3 + Rekognition. **PROD: IAM role, no env var**. |
+| `AWS_SECRET_ACCESS_KEY` | solo dev | — | Idem. **PROD: IAM role**. |
+| `AWS_S3_BUCKET_NAME` | no | `perfilamiento-faces` | Bucket para presigned URLs de fotos de socios (thumbnail en face-search results). |
+| `REKOGNITION_COLLECTION_ID` | no | `socios_stadium_users` | ID de la colección Rekognition donde se buscan caras. **Debe matchear con backend** (`backend/.env.development`). |
+
+### Dónde cambiar cada clave (resumen rápido)
+
+- **Cambiar token compartido con admin**: `FACE_SEARCH_TOKEN` en este `.env.development` + `VITE_FACE_SEARCH_TOKEN` en `admin/.env.development`. Mismo valor exacto en ambos.
+- **Cambiar DB**: `DATABASE_URL`. Apuntar al Postgres correcto. Dev: misma DB que el backend Rails (`app_perfil_development`).
+- **Rotar AWS keys (dev)**: `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY`. En prod no se setean (IAM role del Cloud Run service account).
+- **Cambiar CORS origins**: `CORS_ORIGINS` (CSV). Ej: `CORS_ORIGINS=https://admin.x.cl,https://admin-staging.x.cl`.
+- **Cambiar colección Rekognition**: `REKOGNITION_COLLECTION_ID`. Debe matchear con backend (si no, el face-search no encuentra nada).
+- **Cambiar bucket S3**: `AWS_S3_BUCKET_NAME`. Debe matchear con backend (si no, las presigned URLs no funcionan).
+
+### Deploy a GCP Cloud Run
+
+El `cloudbuild.yaml` deploya el container y monta 2 secrets desde GCP Secret Manager:
+
+- `DATABASE_URL` → debe existir como secret `DATABASE_URL` en Secret Manager
+- `FACE_SEARCH_TOKEN` → debe existir como secret `FACE_SEARCH_TOKEN`
+
+```bash
+# Crear secrets antes del primer deploy
+echo -n "postgres://user:pass@/db?host=/cloudsql/instance" | \
+  gcloud secrets create DATABASE_URL --data-file=-
+echo -n "$(openssl rand -hex 32)" | \
+  gcloud secrets create FACE_SEARCH_TOKEN --data-file=-
+
+# Dar acceso al Cloud Run service account
+gcloud secrets add-iam-policy-binding DATABASE_URL \
+  --member="serviceAccount:PROJECT_ID@appspot.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+Las vars no-secreto (`AWS_REGION`, `REKOGNITION_COLLECTION_ID`) se setean con `--set-env-vars=` en cloudbuild.yaml. Las credenciales AWS reales NO se setean — el Cloud Run service account usa Workload Identity Federation para asumir un IAM role con permisos S3 + Rekognition.
 
 ## Decisiones
 
