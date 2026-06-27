@@ -166,7 +166,7 @@ Las vars no-secreto (`AWS_REGION`, `REKOGNITION_COLLECTION_ID`) se setean con `-
 
 ## Tests
 
-No hay tests unitarios todavía (pendiente en CHECKLIST.md).
+No hay tests unitarios todavía (pendiente en [`CHECKLIST.md`](https://github.com/arnigon-holdings/app-socios-estadio-docs/blob/main/CHECKLIST.md)).
 
 ```bash
 # Smoke test local
