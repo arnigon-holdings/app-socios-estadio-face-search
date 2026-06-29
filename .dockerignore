@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+.env.production
+.env.aws
+
+README.md
+docs/
+tmp/
+.DS_Store
+*.md
