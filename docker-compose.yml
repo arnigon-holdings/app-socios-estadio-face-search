@@ -1,34 +1,12 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-app_perfil_development}
-      POSTGRES_USER: ${POSTGRES_USER:-app_perfil}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app_perfil}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  face-search:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8081:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file:
-      - .env.development
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-app_perfil}:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/${POSTGRES_DB:-app_perfil_development}?sslmode=disable
-      PORT: "8080"
-
-volumes:
-  postgres_data:
+    face-search:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        ports:
+            - "8081:8080"
+        env_file:
+            - .env.development
+        environment:
+            DATABASE_URL: postgres://${POSTGRES_USER:-app_perfil}:${POSTGRES_PASSWORD:-dev_password}@host.docker.internal:5436/${POSTGRES_DB:-app_perfil_development}?sslmode=disable
+            PORT: "8080"
