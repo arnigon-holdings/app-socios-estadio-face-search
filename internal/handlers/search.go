@@ -35,12 +35,16 @@ type SearchResponse struct {
 }
 
 type MatchResult struct {
-	UserID     string  `json:"user_id"`
-	RUT        string  `json:"rut"`
-	Phone      string  `json:"phone"`
-	Confidence float64 `json:"confidence"`
-	FaceID     string  `json:"face_id,omitempty"`
-	PhotoURL   string  `json:"photo_url,omitempty"`
+	UserID            string   `json:"user_id"`
+	RUT               string   `json:"rut"`
+	Phone             string   `json:"phone"`
+	Confidence        float64  `json:"confidence"`
+	AvgSimilarity     float64  `json:"avg_similarity"`
+	FacesCount       int      `json:"faces_count"`
+	ConsensusBoosted  bool     `json:"consensus_boosted"`
+	PhotoURL         string   `json:"photo_url"`
+	FaceID           string   `json:"face_id,omitempty"`
+	PhotoURLs        []string `json:"photo_urls"`
 }
 
 type ErrorResponse struct {
@@ -84,7 +88,7 @@ func (h *SearchHandler) SearchFace(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	faceMatches, err := h.rekognition.SearchFaces(ctx, imageBytes, 96)
+	faceMatches, err := h.rekognition.SearchFaces(ctx, imageBytes, float32(h.cfg.FaceSearchThreshold), float32(h.cfg.MaxFaces))
 	if err != nil {
 		h.writeRekognitionError(w, err)
 		return
@@ -129,40 +133,112 @@ func (h *SearchHandler) extractImageBytes(imageData string) ([]byte, error) {
 }
 
 func (h *SearchHandler) consolidateMatches(ctx context.Context, faceMatches []rekognition.FaceMatch) []MatchResult {
-	userMatches := make(map[string]*MatchResult)
+	// Group face matches by numeric userID extracted from ExternalImageId.
+	type userMatch struct {
+		result      MatchResult
+		similarities []float64
+	}
+	userMatches := make(map[string]*userMatch)
+
+	// ExternalImageId is "userID_pose" (e.g. "51_pose_0"). Extract numeric userID.
+	uniqueIDs := make([]string, 0, len(faceMatches))
+	seen := make(map[string]bool)
+	for _, m := range faceMatches {
+		if !seen[m.UserID] {
+			seen[m.UserID] = true
+			uniqueIDs = append(uniqueIDs, h.extractUserID(m.UserID))
+		}
+	}
+
+	users, faceRecordsMap, err := h.db.GetUsersAndFaceRecordsByIDs(ctx, uniqueIDs)
+	if err != nil {
+		log.Printf("[face-search] batch user query failed: %v", err)
+	}
 
 	for _, match := range faceMatches {
-		existing, ok := userMatches[match.UserID]
+		userID := h.extractUserID(match.UserID)
+		um, ok := userMatches[userID]
 		if !ok {
-			userInfo, err := h.db.GetUserByID(ctx, match.UserID)
-			if err != nil || userInfo == nil {
+			userInfo, ok := users[userID]
+			if !ok || userInfo == nil {
 				continue
 			}
 
-			photoURL := h.buildPhotoURL(ctx, match.UserID)
+			photoURLs := make([]string, 0)
+			var firstPhotoURL string
+			if refs, ok := faceRecordsMap[userID]; ok {
+				for _, ref := range refs {
+					if url := h.buildPhotoURLFromRef(ctx, userID, ref); url != "" {
+						photoURLs = append(photoURLs, url)
+					}
+				}
+				if len(photoURLs) > 0 {
+					firstPhotoURL = photoURLs[0]
+				}
+			}
 
-			userMatches[match.UserID] = &MatchResult{
-				UserID:     match.UserID,
-				RUT:        userInfo.RUT,
-				Phone:      userInfo.Phone,
-				Confidence: match.Confidence,
-				FaceID:     match.FaceID,
-				PhotoURL:   photoURL,
+			userMatches[userID] = &userMatch{
+				result: MatchResult{
+					UserID:     userID,
+					RUT:        userInfo.RUT,
+					Phone:      userInfo.Phone,
+					Confidence: match.Similarity,
+					AvgSimilarity: match.Similarity,
+					FacesCount: 1,
+					PhotoURL:  firstPhotoURL,
+					FaceID:   match.FaceID,
+					PhotoURLs: photoURLs,
+				},
+				similarities: []float64{match.Similarity},
 			}
 		} else {
-			if match.Confidence > existing.Confidence {
-				existing.Confidence = match.Confidence
-				existing.FaceID = match.FaceID
+			um.similarities = append(um.similarities, match.Similarity)
+			um.result.FacesCount++
+			if match.Similarity > um.result.Confidence {
+				um.result.Confidence = match.Similarity
+				um.result.FaceID = match.FaceID
 			}
 		}
 	}
 
+	// Apply consensus boost: if >=3 faces with avg >= 85%, boost confidence 5%.
+	const consensusMinFaces = 3
+	const consensusMinAvg = 85.0
+	const consensusBoostPct = 0.05
+
 	result := make([]MatchResult, 0, len(userMatches))
-	for _, match := range userMatches {
-		result = append(result, *match)
+	for _, um := range userMatches {
+		n := len(um.similarities)
+		sum := 0.0
+		for _, s := range um.similarities {
+			sum += s
+		}
+		avg := sum / float64(n)
+
+		um.result.AvgSimilarity = avg
+
+		if n >= consensusMinFaces && avg >= consensusMinAvg {
+			um.result.ConsensusBoosted = true
+			boosted := um.result.Confidence * (1 + consensusBoostPct)
+			if boosted > 100 {
+				boosted = 100
+			}
+			um.result.Confidence = boosted
+		}
+
+		result = append(result, um.result)
 	}
 
 	return result
+}
+
+// extractUserID extracts the numeric user ID from an ExternalImageId
+// (e.g. "51_pose_0" -> "51", "123" -> "123").
+func (h *SearchHandler) extractUserID(externalImageID string) string {
+	if idx := strings.Index(externalImageID, "_"); idx != -1 {
+		return externalImageID[:idx]
+	}
+	return externalImageID
 }
 
 func (h *SearchHandler) buildPhotoURL(ctx context.Context, userID string) string {
@@ -172,6 +248,14 @@ func (h *SearchHandler) buildPhotoURL(ctx context.Context, userID string) string
 
 	ref, err := h.db.GetLatestFaceRecordByUserID(ctx, userID)
 	if err != nil || ref == nil {
+		return ""
+	}
+
+	return h.buildPhotoURLFromRef(ctx, userID, ref)
+}
+
+func (h *SearchHandler) buildPhotoURLFromRef(ctx context.Context, userID string, ref *db.FaceRecordRef) string {
+	if h.s3Presigner == nil || ref == nil {
 		return ""
 	}
 

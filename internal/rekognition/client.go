@@ -16,7 +16,7 @@ type Client struct {
 type FaceMatch struct {
 	UserID     string  `json:"user_id"`
 	FaceID     string  `json:"face_id"`
-	Confidence float64 `json:"confidence"`
+	Similarity float64 `json:"similarity"`
 }
 
 func NewClient(client *rekognition.Client, collectionID string) *Client {
@@ -26,12 +26,13 @@ func NewClient(client *rekognition.Client, collectionID string) *Client {
 	}
 }
 
-func (c *Client) SearchFaces(ctx context.Context, imageBytes []byte, threshold float32) ([]FaceMatch, error) {
+func (c *Client) SearchFaces(ctx context.Context, imageBytes []byte, threshold, maxFaces float32) ([]FaceMatch, error) {
 	input := &rekognition.SearchFacesByImageInput{
 		CollectionId:       aws.String(c.collectionID),
 		Image:             &types.Image{Bytes: imageBytes},
 		FaceMatchThreshold: aws.Float32(threshold),
-		MaxFaces:          aws.Int32(10),
+		MaxFaces:          aws.Int32(int32(maxFaces)),
+		QualityFilter:      types.QualityFilterNone,
 	}
 
 	result, err := c.client.SearchFacesByImage(ctx, input)
@@ -44,14 +45,14 @@ func (c *Client) SearchFaces(ctx context.Context, imageBytes []byte, threshold f
 		if match.Face == nil {
 			continue
 		}
-		confidence := float64(0)
-		if match.Face.Confidence != nil {
-			confidence = float64(*match.Face.Confidence)
+		similarity := float64(0)
+		if match.Similarity != nil {
+			similarity = float64(*match.Similarity)
 		}
 		matches = append(matches, FaceMatch{
 			FaceID:     aws.ToString(match.Face.FaceId),
 			UserID:     aws.ToString(match.Face.ExternalImageId),
-			Confidence: confidence,
+			Similarity: similarity,
 		})
 	}
 
