@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 type Client struct {
@@ -67,4 +67,50 @@ func (c *Client) GetLatestFaceRecordByUserID(ctx context.Context, userID string)
 	}
 
 	return &ref, nil
+}
+
+func (c *Client) GetUsersAndFaceRecordsByIDs(ctx context.Context, userIDs []string) (map[string]*UserInfo, map[string][]*FaceRecordRef, error) {
+	if len(userIDs) == 0 {
+		return make(map[string]*UserInfo), make(map[string][]*FaceRecordRef), nil
+	}
+
+	query := `
+		SELECT u.id::text, u.rut, u.phone,
+			fr.s3_bucket, fr.s3_key
+		FROM unnest($1::bigint[]) WITH ORDINALITY AS t(user_id, ord)
+		JOIN users u ON u.id = t.user_id
+		LEFT JOIN LATERAL (
+			SELECT s3_bucket, s3_key
+			FROM face_records
+			WHERE user_id = t.user_id AND indexed_at IS NOT NULL
+			ORDER BY indexed_at DESC
+		) fr ON true
+		ORDER BY t.ord`
+
+	rows, err := c.db.QueryContext(ctx, query, pq.Array(userIDs))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to batch query users and face records: %w", err)
+	}
+	defer rows.Close()
+
+	users := make(map[string]*UserInfo)
+	faceRecords := make(map[string][]*FaceRecordRef)
+
+	for rows.Next() {
+		var id, rut, phone string
+		var s3Bucket, s3Key sql.NullString
+		if err := rows.Scan(&id, &rut, &phone, &s3Bucket, &s3Key); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		users[id] = &UserInfo{RUT: rut, Phone: phone}
+		if s3Bucket.Valid && s3Key.Valid {
+			faceRecords[id] = append(faceRecords[id], &FaceRecordRef{S3Bucket: s3Bucket.String, S3Key: s3Key.String})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	return users, faceRecords, nil
 }
